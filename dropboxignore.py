@@ -13,6 +13,10 @@ parser.add_argument('-s', dest='ignore_file_header', default=default_header, hel
 parser.add_argument('-v', dest='verbose', action='store_true', default=False, help='Debug info (default: False)')
 parser.add_argument('-q', dest='quiet', action='store_true', default=False, help='Be quieter (default: False)')
 parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False, help='Dry-run (default: False)')
+parser.add_argument('--attr-name', dest='attr_name', default='com.dropbox.ignored', help='Attribute name (default: com.dropbox.ignored)')
+parser.add_argument('--attr-zero', dest='attr_zero', action='store_true', default=False, help='Zero attr instead of removing (default: False)')
+parser.add_argument('--depth', dest='depth', type=int, default=1, help='Max depth for recursion. 0 = no limit, use with care. (default: 1)')
+
 args = parser.parse_args()
 spec = None
 
@@ -29,6 +33,18 @@ force = args.force
 verbose = args.verbose
 quiet = args.quiet
 dry_run = args.dry_run
+attr_name = args.attr_name
+attr_zero = args.attr_zero
+depth = args.depth
+
+if depth == 0:
+    # not tested, feel free to remove this and try it out
+    print('Unlimited recursion disabled for now')
+    exit(1)
+
+if depth != 1 and watch:
+    print('Recursive watch not supported yet')
+    exit(1)
 
 if verbose:
     print('ignore_file', ignore_file)
@@ -38,6 +54,9 @@ if verbose:
     print('verbose', verbose)
     print('quiet', quiet)
     print('dry_run', dry_run)
+    print('attr_name', attr_name)
+    print('attr_zero', attr_zero)
+    print('depth', depth)
 
 def is_valid_ignorefile():
     if not os.path.isfile(ignore_file):
@@ -63,19 +82,30 @@ def update_ignore_attr(path):
     ignore = spec is not None and spec.match_file(path)
     if verbose or dry_run: print(int(ignore), os.path.relpath(path, dropbox_dir))
     if verbose: subprocess.run(['attr', '-l', path])
-    if dry_run: return
-    #subprocess.run(['attr', '-s', 'com.dropbox.ignored', '-V', str(int(ignore)), path])
-    #subprocess.run(['attr', '-q', '-g', 'com.dropbox.ignored', path])
-    if ignore: subprocess.run(['attr', '-q', '-s', 'com.dropbox.ignored', '-V', '1', path])
-    else: subprocess.run(['attr', '-q', '-r', 'com.dropbox.ignored', path], stderr=subprocess.DEVNULL) # TODO: Maybe check if attr exists instead of silencing stderr
+    if dry_run: return ignore
+    if zero_attr:
+        subprocess.run(['attr', '-s', attr_name, '-V', str(int(ignore)), path])
+    else:
+        if ignore: subprocess.run(['attr', '-q', '-s', attr_name, '-V', '1', path])
+        else: subprocess.run(['attr', '-q', '-r', attr_name, path], stderr=subprocess.DEVNULL) # TODO: Maybe check if attr exists instead of silencing stderr
+    return ignore
+
+def update_ignore_dir(dir, level = 1):
+    for path in os.listdir(dir):
+        full = os.path.join(dir, path)
+        ignore = update_ignore_attr(full)
+        if ignore or not os.path.isdir(full):
+            continue
+        if depth == 0 or level < depth:
+            if verbose: print('Recurse', full, depth)
+            update_ignore_dir(full, level + 1)
 
 spec = load_ignorefile()
 
 if spec is None and not force:
     exit(1)
 
-for path in os.listdir(dropbox_dir):
-    update_ignore_attr(os.path.join(dropbox_dir, path))
+update_ignore_dir(dropbox_dir)
 
 if watch:
     inotify = INotify()
