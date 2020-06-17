@@ -1,5 +1,4 @@
-import os, sys, argparse, subprocess
-from gitignore_parser import parse_gitignore
+import os, sys, argparse, subprocess, pathspec
 from inotify_simple import INotify, flags
 
 default_ignorefile = '.dropboxignore'
@@ -15,7 +14,7 @@ parser.add_argument('-v', dest='verbose', action='store_true', default=False, he
 parser.add_argument('-q', dest='quiet', action='store_true', default=False, help='Be quieter (default: False)')
 parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=False, help='Dry-run (default: False)')
 args = parser.parse_args()
-matches = None
+spec = None
 
 dropbox_dir = os.path.expanduser('~/Dropbox') if args.dropbox_dir is None else args.dropbox_dir
 
@@ -51,17 +50,18 @@ def is_valid_ignorefile():
 
 def load_ignorefile():
     if is_valid_ignorefile():
-        matches = parse_gitignore(ignore_file, dropbox_dir)
+        if not quiet: print('Loading ignore file', ignore_file)
+        with open(ignore_file, 'r') as fh:
+            return pathspec.PathSpec.from_lines('gitwildmatch', fh)
     elif force:
         if not quiet: print('Ignore file', ignore_file, 'not found, ignore nothing until it exists')
-        matches = None
     else:
         print('Ignore file', ignore_file, 'not found, run with -f to ignore', file=sys.stderr)
+    return None
 
 def update_ignore_attr(path):
-    name = os.path.relpath(path, dropbox_dir)
-    ignore = matches is not None and matches(name)
-    if verbose or dry_run: print('Ignore path', path, name, ignore)
+    ignore = spec is not None and spec.match_file(path)
+    if verbose or dry_run: print(int(ignore), os.path.relpath(path, dropbox_dir))
     if verbose: subprocess.run(['attr', '-l', path])
     if dry_run: return
     #subprocess.run(['attr', '-s', 'com.dropbox.ignored', '-V', str(int(ignore)), path])
@@ -69,9 +69,9 @@ def update_ignore_attr(path):
     if ignore: subprocess.run(['attr', '-q', '-s', 'com.dropbox.ignored', '-V', '1', path])
     else: subprocess.run(['attr', '-q', '-r', 'com.dropbox.ignored', path], stderr=subprocess.DEVNULL) # TODO: Maybe check if attr exists instead of silencing stderr
 
-load_ignorefile()
+spec = load_ignorefile()
 
-if matches is None and not force:
+if spec is None and not force:
     exit(1)
 
 for path in os.listdir(dropbox_dir):
@@ -101,7 +101,7 @@ if watch:
                 path = os.path.join(wd_dirs[event.wd], event.name)
                 if os.path.isfile(ignore_file) and os.path.samefile(ignore_file, path):
                     if verbose: print('Ignore file changed, reloading') 
-                    load_ignorefile()
+                    spec = load_ignorefile()
                 update_ignore_attr(path)
             else:
                 print('Unexpected wd', event.wd, 'exiting', file=sys.stderr)
